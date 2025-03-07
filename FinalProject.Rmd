@@ -1,0 +1,513 @@
+---
+title: "Final Project"
+author: "Ethan Lee - 505997405"
+date: "2024-12-02"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r, results='hide'}
+Sys.setlocale("LC_ALL", "C")
+Sys.setenv(LANG="en")
+library(ggplot2)
+library(class)
+library(boot)
+library(crossval)
+library(MASS)
+library(caret)
+```
+
+#Q3) Download the training and the testing data sets.  
+```{r}
+ObesityTr <- read.csv("/Users/ethanlee/Desktop/STATS 101C/ObesityTrain2.csv", header = TRUE)
+ObesityTs <- read.csv("/Users/ethanlee/Desktop/STATS 101C/ObesityTestNoY2.csv", header = TRUE)
+```
+
+##a) Report the dimensions of both the training and the testing data sets.
+```{r}
+cat("The dimensions of training data set: ", dim(ObesityTr), "\n")
+cat("The dimensions of testing data set: ", dim(ObesityTs))
+```
+
+##b) How many numerical predictors does your data have? List them.
+```{r}
+numerical_columns <- sapply(ObesityTr, is.numeric)
+numerical_predictors <- names(ObesityTr)[numerical_columns]
+num_numerical_predictors <- length(numerical_predictors)
+cat("The  data has ", num_numerical_predictors, "numerical predictors. They are: ", paste(strsplit(numerical_predictors, " "), ","))
+```
+
+##c) How many categorical predictors does your data have? List them.
+```{r}
+categorical_predictors <- names(ObesityTr[, !(names(ObesityTr) %in% numerical_predictors)])
+categorical_predictors <- categorical_predictors[-length(categorical_predictors)]
+num_categorical_predictors <- length(categorical_predictors)
+cat("The  data has ", num_categorical_predictors, "categorical predictors. They are: ", paste(strsplit(categorical_predictors, " "), ","))
+```
+
+##d) Report the size of missing values (frequency or percentage or both) in both data sets (Training and Testing).
+```{r}
+#function
+calculate_missing_values <- function(data){
+  total_missing = sum(is.na(data))
+  missing_percentage <- sum(is.na(data)) / prod(dim(data)) *100
+  column_missing_freq <- colSums(is.na(data))
+  column_missing_percentage <- (column_missing_freq / nrow(data)) * 100
+  result <- list(total_missing = total_missing,
+    missing_percentage = missing_percentage,
+    col_missing = cbind(column_missing_freq, column_missing_percentage)
+  )
+  return(result)
+}
+print(calculate_missing_values(ObesityTr))
+print(calculate_missing_values(ObesityTs))
+```
+
+##e) Report the frequency and proportions of the categories in your response variable (in the Training and Testing data).
+```{r}
+freq_table <- table(ObesityTr$ObStatus)
+prop_table <- prop.table(freq_table)
+print(freq_table)
+print(prop_table)
+#Testing data do not have response variable
+```
+
+##f) What is your maximum error rate allowed based on your Training data?
+```{r}
+max_error_rate <- sum(ObesityTr$ObStatus == "Not Obese") / nrow(ObesityTr)
+cat("Maximum error rate allowed based on your Training data is: ", max_error_rate)
+```
+
+##g) Plot densities of your best three numerical predictors based on the response variable.
+```{r}
+#deal with the missing values
+for (col in names(ObesityTr)) {
+  if (is.numeric(ObesityTr[[col]])) {
+    # missing value = the average
+    mean_value <- mean(ObesityTr[[col]], na.rm = TRUE)
+    ObesityTr[[col]][is.na(ObesityTr[[col]])] <- mean_value
+  }
+}
+#choose the best 3 numerical predictor
+###correlations <- cor(ObesityTr[, numerical_columns],  as.numeric(as.factor(ObesityTr$ObStatus)), use = "complete.obs")
+
+p_values <- sapply(ObesityTr[, numerical_columns], function(x) {
+  anova_result <- aov(x ~ ObesityTr$ObStatus)
+  summary(anova_result)[[1]]["Pr(>F)"][1]
+})
+p_values <- as.data.frame(p_values)
+top_num_predictors <- names(p_values[, order(as.matrix(p_values[1,]), decreasing = TRUE)])[1:3]
+```
+The best 3 numerical predictor are: Height, RestingBP, MaxHR
+```{r}
+#plot densities
+top_num_predictors <- c("Height", "RestingBP", "MaxHR")
+plots <- lapply(top_num_predictors, function(pred) {
+  ggplot(ObesityTr, aes_string(x = pred, color = "ObStatus", fill = "ObStatus")) +
+    geom_density(alpha = 0.3) +
+    labs(title = paste("Density of", pred, "by ObStatus"),
+         x = pred, y = "Density") +
+    theme_minimal()
+})
+library(gridExtra)
+grid.arrange(grobs = plots, ncol = 1)
+
+```
+
+##h) Create stacked par charts for your best three categorical predictors based on your response variable.
+```{r}
+#deal with the missing values
+set.seed(12345)
+for (col in names(ObesityTr)) {
+  if (is.factor(ObesityTr[[col]]) || is.character(ObesityTr[[col]])) {
+    proportions <- prop.table(table(ObesityTr[[col]], useNA = "no"))
+    categories <- names(proportions)
+    probs <- as.numeric(proportions)
+    # randomly assign
+    missing_indices <- which(is.na(ObesityTr[[col]]))
+    ObesityTr[[col]][missing_indices] <- sample(categories, length(missing_indices), replace = TRUE, prob = probs)
+  }
+}
+#choose the best categorical predictors
+chisq_p_values <- sapply(categorical_predictors, function(var) {
+  chisq_test <- chisq.test(table(ObesityTr[[var]], ObesityTr$ObStatus))
+  return(chisq_test$p.value)
+})
+sorted_p_values <- sort(chisq_p_values)
+best_three_cate_predictors <- names(sorted_p_values)[1:3]
+cat("Best three categorical predictors based on chi-square test:", best_three_cate_predictors)
+
+#Create stacked par charts
+stacked_bar_charts <- lapply(best_three_cate_predictors, function(pred) {
+  ggplot(ObesityTr, aes_string(x = pred, fill = "ObStatus")) +
+    geom_bar(position = "fill") +  
+    labs(title = paste("Stacked Bar Chart of", pred, "by ObStatus"),
+         x = pred, y = "Proportion") +
+    theme_minimal() +
+    scale_y_continuous(labels = scales::percent) +  
+    scale_fill_brewer(palette = "Set2")
+})
+library(gridExtra)
+grid.arrange(grobs = stacked_bar_charts, ncol = 1) 
+```
+
+##i) List predictors that are not in your data, but you wished they were (based on context)
+Sleep Quality; Income level; Education level.
+
+
+
+#Q4) Build a classifier of your choice and predict the class of the unknown Y variable “ObStatus” in the testing data. Create a submission file (similar to the submission file example and submit your prediction on Kaggle. If you already have a group, each member must submit his/her own file.
+
+##a) User Name of your Kaggle Account
+Lany Lan
+##b) Report your training model (summary)
+```{r}
+ObesityTr <- read.csv("/Users/ethanlee/Desktop/STATS 101C/ObesityTrain2.csv", header = TRUE)
+ObesityTs <- read.csv("/Users/ethanlee/Desktop/STATS 101C/ObesityTestNoY2.csv", header = TRUE)
+ObesitySampleSol <- read.csv("/Users/ethanlee/Desktop/STATS 101C/ObesitySampleSolKaggle.csv", header = TRUE)
+```
+
+```{r}
+#output function
+csv_output <- function(predictions,file_name){
+  ID <- c(1:10672)
+  test_preds <- data.frame("ID" = ID, "ObStatus" = predictions)
+  write.csv(test_preds, file = as.character(file_name), row.names = FALSE)
+}
+```
+
+```{r}
+#deal with the missing values
+missing_fill <- function(data){
+  for (col in names(data)) {
+    if (is.numeric(data[[col]])) {
+      # missing value = the average
+      median_value <- median(data[[col]], na.rm = TRUE)
+      data[[col]][is.na(data[[col]])] <- median_value
+    }
+    if (is.factor(data[[col]]) || is.character(data[[col]])) {
+      proportions <- prop.table(table(data[[col]], useNA = "no"))
+      categories <- names(proportions)
+      probs <- as.numeric(proportions)
+      # randomly assign
+      missing_indices <- which(is.na(data[[col]]))
+      data[[col]][missing_indices] <- sample(categories, length(missing_indices), replace = TRUE, prob = probs)
+    }
+  }
+  return(data)
+}
+ObesityTr <- missing_fill(ObesityTr)
+ObesityTs <- missing_fill(ObesityTs)
+```
+
+
+
+```{r}
+#scale the numerical predictors
+library(dplyr)
+train_predictors <- select(ObesityTr, where(is.numeric), -ObStatus)
+test_predictors <- select(ObesityTs, where(is.numeric))
+
+train_mean <- sapply(train_predictors, mean, na.rm = TRUE)
+train_sd <- sapply(train_predictors, sd, na.rm = TRUE)
+
+train_predictors_scaled <- as.data.frame(scale(train_predictors, center = train_mean, scale = train_sd))
+test_predictors_scaled <- as.data.frame(scale(test_predictors, center = train_mean, scale = train_sd))
+
+ObesityTr <- ObesityTr %>%
+  select(-where(is.numeric), -ObStatus) %>%
+  bind_cols(train_predictors_scaled) %>%
+  mutate(ObStatus = ObesityTr$ObStatus)
+
+ObesityTs <- ObesityTs %>%
+  select(-where(is.numeric)) %>%
+  bind_cols(test_predictors_scaled)
+```
+
+
+```{r}
+#outlier
+pro_outlier <- function(data){
+  for (col in names(data)) {
+    Q1 <- quantile(data$col, 0.25)
+    Q3 <- quantile(data$col, 0.75)
+    IQR_value <- Q3 - Q1
+    outliers <- which(data$col < (Q1 - 1.5 * IQR_value) | data$col > 
+                      (Q3 + 1.5 * IQR_value))
+    data$col[outliers] <- median(data$col, na.rm = TRUE)
+  }
+  return(data)
+}
+ObesityTr <- pro_outlier(ObesityTr)
+ObesityTs <- pro_outlier(ObesityTs)
+```
+
+```{r}
+#Subset Selection
+library(caret)
+ObesityTr$ObStatus <- as.factor(ObesityTr$ObStatus)
+#recursive feature elimination
+control <- rfeControl(functions = rfFuncs, method = "cv", number = 5)
+predictors <- ObesityTr[, names(ObesityTr) != "ObStatus"]
+set.seed(123)
+subset_selection <- rfe(
+  predictors, 
+  ObesityTr$ObStatus,
+  sizes = c(5, 10, 15, 20, 25),
+  rfeControl = control
+)
+selected_vars <- predictors(subset_selection)
+print(selected_vars)
+```
+selected variables are: "Height" "Race"   "Age"    "CALC"   "FAF"    "CH2O"   "MTRANS" "NCP"    "FCVC"  "SMOKE"
+
+```{r}
+#PCA
+X_train <- model.matrix(ObStatus ~ ., ObesityTr)[ ,-1]
+pca <- prcomp(X_train, center = TRUE, scale. = TRUE)
+num_components <- 10
+X_train_pca <- pca$x[, 1:num_components]
+```
+
+```{r}
+#Lasso Regression
+library(glmnet)
+X <- model.matrix(ObStatus ~ ., ObesityTr)
+y <- ObesityTr$ObStatus
+lasso_model <- cv.glmnet(X, y, alpha = 1, family = "binomial")
+best_lambda <- lasso_model$lambda.min
+print(best_lambda)
+lasso_final_model <- glmnet(X, y, alpha = 1, lambda = best_lambda, family = "binomial")
+summary(lasso_final_model)
+```
+
+```{r}
+#test
+lasso_train_preds <- predict(lasso_final_model, newx = X, type = "class")
+lasso_train_accuracy <- mean(lasso_train_preds == y)
+cat("error rate", 1 - lasso_train_accuracy, "\n")
+
+lasso_test_preds <-predict(lasso_final_model, newx = model.matrix( ~ ., ObesityTs), , type = "class")
+csv_output(lasso_test_preds, "lasso_preds.csv")
+```
+
+```{r}
+#linear regression
+logistic_model <- glm(as.factor(ObStatus) ~ ., data = ObesityTr, family = binomial)
+#summary(logistic_model)
+
+logistic_probs <- predict(logistic_model, type = "response")
+logistic_preds <- ifelse(logistic_probs > 0.5, "Obese", "Not Obese")
+
+log_table <- table(Predicted = logistic_preds, Actual = ObesityTr$ObStatus)
+log_error_rate <- (log_table[1,2] + log_table[2,1]) / sum(log_table)
+cat("The error rate is: ", log_error_rate)
+#cv
+set.seed(12345)
+cvlogistic_model <- cv.glm(ObesityTr, logistic_model, K = 10)
+cv_log_error_rate <- cv.glm(ObesityTr, logistic_model, K = 10)$delta
+cat("The error rate is: ",cv_log_error_rate)
+```
+```{r}
+#test
+logistic_model <- glm(as.factor(ObStatus) ~ ., data = ObesityTr, family = binomial)
+summary(logistic_model)
+logistic_probs <- predict(logistic_model, newdata = ObesityTs)
+logistic_preds <- ifelse(logistic_probs > 0.5, "Obese", "Not Obese")
+
+csv_output(logistic_preds, "logistic_preds.csv")  
+```
+
+
+```{r}
+#LDA
+#lda_model <- lda(ObStatus ~ ., data = ObesityTr)
+#lda_preds <- predict(lda_model)$class
+#table(Predicted = lda_preds, Actual = ObesityTr$ObStatus)
+set.seed(12345)
+train_control <- trainControl(method = "cv", number = 20)
+cv_lda_model <- train(ObStatus ~ ., 
+                   data = ObesityTr, 
+                   method = "lda", 
+                   trControl = train_control)
+cv_lda_error_rate <- 1 - cv_lda_model$results$Accuracy
+cat("The error rate is: ",cv_lda_error_rate)
+summary(cv_lda_model)
+```
+```{r}
+#test
+lda_preds <- predict(cv_lda_model, newdata = ObesityTs)
+
+csv_output(lda_preds, "lda_preds.csv")
+```
+
+```{r}
+#KNN
+set.seed(12345)
+train_control <- trainControl(method = "cv", number = 5)
+cv_knn_model <- train(ObStatus ~ ., 
+                   data = ObesityTr, 
+                   method = "knn",
+                    tuneGrid = expand.grid(k = 5), 
+                   trControl = train_control)
+cv_knn_error_rate <- 1 - cv_knn_model$results$Accuracy
+cat("The error rate is: ",cv_knn_error_rate)
+summary(cv_knn_model)
+```
+```{r}
+library(caret)
+
+# Use the cross-validated KNN model to make predictions on the training data
+knn_predictions <- predict(cv_knn_model, ObesityTr)
+
+# Create a confusion matrix for the predicted vs actual values
+conf_matrix <- confusionMatrix(knn_predictions, ObesityTr$ObStatus)
+print(conf_matrix)
+
+# Visualization of Confusion Matrix
+library(ggplot2)
+conf_matrix_data <- as.data.frame(conf_matrix$table)
+ggplot(data = conf_matrix_data, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile() +
+  geom_text(aes(label = Freq), color = "white") +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  labs(title = "Confusion Matrix for KNN Model", x = "Actual Class", y = "Predicted Class") +
+  theme_minimal()
+```
+```{r}
+library(caret)
+library(ROCR)
+
+# Generate predicted probabilities for the "Obese" class
+knn_probabilities <- predict(cv_knn_model, ObesityTr, type = "prob")[, "Obese"]
+
+# Create a prediction object using the ROCR package
+pred <- prediction(knn_probabilities, ObesityTr$ObStatus)
+
+# Generate ROC performance data
+perf <- performance(pred, measure = "tpr", x.measure = "fpr")
+
+# Plot the ROC curve manually with labeled axes spanning from 0 to 1
+plot(perf,
+     main = "ROC Curve for KNN Model",
+     col = "blue",
+     lwd = 2,
+     xlim = c(0, 1),  # Set x-axis from 0 to 1 for False Positive Rate
+     ylim = c(0, 1),  # Set y-axis from 0 to 1 for True Positive Rate
+     xlab = "False Positive Rate (1 - Specificity)",
+     ylab = "True Positive Rate (Sensitivity)")
+
+# Add the diagonal line representing a random classifier
+abline(a = 0, b = 1, col = "gray", lty = 2)
+
+```
+
+
+```{r}
+#test
+knn_preds <- predict(cv_knn_model, newdata = ObesityTs)
+
+csv_output(knn_preds, "knn_preds.csv")
+```
+
+```{r}
+#Random Forest classifier
+library(randomForest)
+library(caret)
+ObesityTr$ObStatus <- as.factor(ObesityTr$ObStatus)
+
+rf_model <- randomForest(ObStatus ~ ., data = ObesityTr, ntree = 100, mtry = 3)
+rf_pred_tr <-  predict(rf_model, newdata = ObesityTr)
+rf_df_mtx <- table(rf_pred_tr, ObesityTr$ObStatus)
+rf_accuracy <- (rf_df_mtx[1,1] + rf_df_mtx[2, 2]) / sum(rf_df_mtx)
+cat("Accuracy: ", rf_accuracy)
+
+f_predictions <- predict(rf_model, newdata = ObesityTs)
+summary((rf_model))
+
+csv_output(f_predictions, "f_preds.csv")
+```
+
+```{r}
+# Define the response and predictors
+response_var <- "ObStatus"
+selected_predictor_names <- c("Height", "Race", "Age", "CALC", "FAF", "CH2O", "MTRANS", "NCP", "FCVC", "SMOKE")
+
+
+# Store number of features for mtry tuning range
+num_features <- length(selected_predictor_names)
+
+# Create a vector to store MCR values
+mtry_values <- 1:num_features
+misclassification_rates <- numeric(length(mtry_values))
+
+# Loop through different mtry values to find MCR for each
+for (i in mtry_values) {
+  # Train Random Forest with the current mtry value
+  rf_model <- randomForest(
+    ObStatus ~ .,
+    data = ObesityTr,
+    mtry = i,
+    ntree = 100,            # Using 100 trees for faster computation
+    importance = TRUE
+  )
+  
+  # Calculate OOB Misclassification Rate (MCR)
+  oob_predictions <- rf_model$predicted
+  oob_actual <- ObesityTr$ObStatus
+  misclassification_rates[i] <- mean(oob_predictions != oob_actual)
+}
+
+# Create a data frame for plotting
+mtry_results <- data.frame(
+  mtry = mtry_values,
+  MCR = misclassification_rates
+)
+
+# Plot the Misclassification Rate against mtry values
+ggplot(mtry_results, aes(x = mtry, y = MCR)) +
+  geom_line(color = "blue") +
+  geom_point(color = "red") +
+  labs(title = "Misclassification Rate vs mtry",
+       x = "mtry (Number of Features Considered at Each Split)",
+       y = "Misclassification Rate (MCR)") +
+  theme_minimal()
+
+```
+
+
+```{r}
+# Extract feature importance scores
+importance_scores <- importance(rf_model)
+print(importance_scores)
+
+# Select the top 10 most important features
+important_features <- names(sort(importance_scores[, 1], decreasing = TRUE)[1:10])
+
+# Train a new Random Forest model with selected features
+# reduced_formula <- as.formula(paste("ObStatus ~", paste(important_features, collapse = " + ")))
+# reduced_rf_model <- randomForest(reduced_formula, data = train_data)
+print(important_features)
+```
+
+
+##c) Report your accuracy based on your training data.
+```{r}
+cat("Accuracy of logisstic: ", 1 - log_error_rate, "\n")
+cat("Accuracy of lasso regression", lasso_train_accuracy, "\n")
+cat("Accuracy of lda: ", 1 - cv_lda_error_rate, "\n")
+cat("Accuracy of knn: ", 1 - cv_knn_error_rate, "\n")
+cat("Accuracy of random forest: ", rf_accuracy)
+```
+##d) Report your accuracy based on your testing (public score) on Kaggle
+logistic_preds.csv: 0.72891
+
+lda_preds.csv: 0.74962
+
+knn_preds.csv: 0.97366
+
+f_preds.csv: 1.00000
+
+##e) Report your rank on Kaggle at the time the predictions were submitted based on your public score.
+rank 2
